@@ -1,0 +1,141 @@
+---
+title: "Bayes Final Project"
+author: "Edward Davis"
+date: "2025-05-15"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+################################################################
+##                                                            ##
+##  bcarotene_JAGS_analysis_modified.R                       ##
+##  Model raw BCAROT with quadratic time and covariates       ##
+##  Informative priors per literature-derived estimates       ##
+################################################################
+
+library(rjags)
+library(coda)
+library(dplyr)
+
+# Load data
+bc_data <- read.csv("bcarotene.csv")
+bc_data$male <- factor(bc_data$male)
+
+# Prepare variables
+df <- bc_data %>%
+  mutate(
+    month  = month,
+    month2 = month^2,
+    BC     = bcarot,
+    dose   = dose,
+    male   = male,
+    BMI    = bmi,
+    chol   = chol,
+    ptid   = ptid
+  )
+
+# Data vectors
+n     <- nrow(df)
+N_pat <- length(unique(df$ptid))
+
+BC     <- df$BC
+month  <- df$month
+month2 <- df$month2
+
+dose   <- df$dose
+male   <- df$male
+dBMI   <- df$BMI
+chol   <- df$chol
+ptid   <- df$ptid
+
+# JAGS data list
+data_jags <- list(
+  BC     = BC,
+  month  = month,
+  month2 = month2,
+  dose   = dose,
+  male   = male,
+  BMI    = dBMI,
+  chol   = chol,
+  ptid   = ptid,
+  n      = n,
+  N_pat  = N_pat
+)
+
+# Initial values generator
+gen_inits <- function() {
+  list(
+    beta0     = rnorm(1, 0.26, 0.07),
+    beta1     = rnorm(1, 0,    0.01),
+    beta2     = rnorm(1, 0,    0.005),
+    beta_dose = rnorm(1, 7e-5, 2e-5),
+    beta_td   = rnorm(1, 0,    0.005),
+    beta_male = rnorm(1, 0,    0.10),
+    beta_BMI  = rnorm(1,-0.075, 0.032),
+    beta_chol = rnorm(1, 0,    0.001),
+    b0        = rnorm(N_pat, 0, 1),
+    tau_res   = runif(1, 0, 1),
+    tau_b0    = runif(1, 0, 1)
+  )
+}
+
+# Parameters to monitor
+params <- c("beta0","beta1","beta2","beta_dose","beta_td",
+            "beta_male","beta_BMI","beta_chol",
+            "sigma_res","sigma_b0")
+
+# JAGS model string
+model_string <- "model {
+  # Likelihood
+  for (i in 1:n) {
+    BC[i] ~ dnorm(mu[i], tau_res)
+    mu[i] <- beta0
+             + beta1 * month[i]
+             + beta2 * month2[i]
+             + beta_dose * dose[i]
+             + beta_td   * dose[i] * month[i]
+             + beta_male * male[i]
+             + beta_BMI  * BMI[i]
+             + beta_chol * chol[i]
+             + b0[ptid[i]]
+  }
+  # Random intercepts
+  for (j in 1:N_pat) {
+    b0[j] ~ dnorm(0, tau_b0)
+  }
+  # Priors
+  beta0     ~ dnorm(0.26, 1/(0.07^2))
+  beta1     ~ dnorm(0,    1/(0.01^2))
+  beta2     ~ dnorm(0,    1/(0.005^2))
+  beta_dose ~ dnorm(7e-5, 1/(2e-5^2))
+  beta_td   ~ dnorm(0,    1/(0.005^2))
+  beta_male ~ dnorm(0,    1/(0.10^2))
+  beta_BMI  ~ dnorm(-0.075,1/(0.032^2))
+  beta_chol ~ dnorm(0,    1/(0.001^2))
+  tau_res   ~ dgamma(0.001, 0.001)
+  tau_b0    ~ dgamma(0.001, 0.001)
+  # Derived
+  sigma_res <- pow(tau_res, -0.5)
+  sigma_b0  <- pow(tau_b0,  -0.5)
+}"  
+
+# Run JAGS
+set.seed(123)
+jags_mod <- jags.model(textConnection(model_string), data=data_jags,
+                       inits=gen_inits, n.chains=3)
+update(jags_mod, 1000)
+
+jags_out <- coda.samples(jags_mod, params,
+                         n.iter=50000, thin=5)
+
+# Summary
+print(summary(jags_out))
+
+# Convert to data frame
+post_df <- as.data.frame(as.matrix(jags_out))
+```
+
